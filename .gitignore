@@ -7,12 +7,19 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-./secret-hitler-game/node_modules
-./secret-hitler-server/node_modules
-./secret-hitler-game/dist
-./secret-hitler-game/dist-ssr
-./secret-hitler-server/dist
-./secret-hitler-server/dist-ssr
+node_modules
+dist
+.parcel-cache
+.env*
+**/.env*
+# ./client/.parcel-cache
+# 
+# ./server/node_modules
+# 
+# ./client/dist
+# ./client/dist-ssr
+# ./server/dist
+# ./server/dist-ssr
 *.local
 
 # Editor directories and files
