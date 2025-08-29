@@ -1,4 +1,5 @@
 import { Room, Client } from "@colyseus/core";
+import { ArraySchema } from "@colyseus/schema";
 import { MyRoomState, Player } from "./schema/MyRoomState";
 
 export class MyRoom extends Room<MyRoomState> {
@@ -18,6 +19,132 @@ export class MyRoom extends Room<MyRoomState> {
       const player = this.state.players.get(client.sessionId);
       if (player) {
         player.inputQueue.push(payload);
+      }
+    });
+
+    // Обработчик выбора канцлера
+    this.onMessage("chancellor-selected", (client, payload) => {
+      // Проверяем, что отправитель - это текущий президент
+      if (client.sessionId === this.state.currentPresidentCandidateId) {
+        const selectedChancellorId = payload.chancellorId;
+        const selectedChancellor = this.state.players.get(selectedChancellorId);
+
+        if (selectedChancellor) {
+          this.state.currentChancellorCandidateId = selectedChancellorId;
+          console.log(`President candidate ${this.state.players.get(client.sessionId)?.nickname} selected ${selectedChancellor.nickname} as chancellor candidate.`);
+
+          // Начинаем фазу голосования
+          this.startVotingPhase();
+        } else {
+          console.warn(`President candidate ${this.state.players.get(client.sessionId)?.nickname} tried to select an invalid chancellor ID: ${selectedChancellorId}`);
+        }
+      } else {
+        console.warn(`Client ${client.sessionId} (not president) tried to select a chancellor.`);
+      }
+    });
+
+    // Обработчик голосования
+    this.onMessage("cast-vote", (client, payload) => {
+      if (this.state.currentPhase !== "voting") {
+        console.warn(`Client ${client.sessionId} tried to vote outside of voting phase.`);
+        return;
+      }
+
+      if (this.state.votedPlayers.has(client.sessionId)) {
+        console.warn(`Client ${client.sessionId} tried to vote multiple times.`);
+        return;
+      }
+
+      const vote = payload.vote; // "for" or "against"
+
+      if (vote === "for") {
+        this.state.votesFor++;
+      } else if (vote === "against") {
+        this.state.votesAgainst++;
+      } else {
+        console.warn(`Client ${client.sessionId} cast an invalid vote: ${vote}`);
+        return;
+      }
+
+      this.state.votedPlayers.set(client.sessionId, true);
+      console.log(`Player ${this.state.players.get(client.sessionId)?.nickname} voted ${vote}. Votes for: ${this.state.votesFor}, Votes against: ${this.state.votesAgainst}`);
+
+      // Проверяем, все ли игроки проголосовали
+      if (this.state.votedPlayers.size === this.state.players.size) {
+        this.endVotingPhase();
+      }
+    });
+
+    // Обработчик выбора президентом закона для сброса
+    this.onMessage("president-discard-policy", (client, payload) => {
+      if (client.sessionId !== this.state.presidentId || this.state.currentPhase !== "presidentPolicy") {
+        console.warn(`Client ${client.sessionId} tried to discard a policy outside of presidentPolicy phase or not as president.`);
+        return;
+      }
+
+      const discardedPolicy = payload.policy; // Например, "liberal" или "fascist"
+      const policyIndex = this.state.presidentPolicyHand.indexOf(discardedPolicy);
+
+      if (policyIndex > -1) {
+        // Удаляем выбранный закон из руки президента и добавляем в колоду сброса
+        this.state.discardPile.push(this.state.presidentPolicyHand.splice(policyIndex, 1)[0]);
+        console.log(`President ${this.state.players.get(client.sessionId)?.nickname} discarded a ${discardedPolicy} policy.`);
+
+        // Оставшиеся 2 закона передаем канцлеру
+        this.state.chancellorPolicyHand.clear();
+        this.state.chancellorPolicyHand.push(...this.state.presidentPolicyHand.toArray());
+        this.state.presidentPolicyHand.clear();
+
+        const chancellorClient = this.clients.find(c => c.sessionId === this.state.chancellorId);
+        if (chancellorClient) {
+          chancellorClient.send("chancellor-select-policy", { policies: this.state.chancellorPolicyHand.toArray() });
+          this.state.currentPhase = "chancellorPolicy";
+          console.log(`Policies passed to Chancellor ${this.state.players.get(this.state.chancellorId)?.nickname}.`);
+        }
+      } else {
+        console.warn(`President ${this.state.players.get(client.sessionId)?.nickname} tried to discard an invalid policy: ${discardedPolicy}`);
+      }
+    });
+
+    // Обработчик выбора канцлером закона для принятия
+    this.onMessage("chancellor-play-policy", (client, payload) => {
+      if (client.sessionId !== this.state.chancellorId || this.state.currentPhase !== "chancellorPolicy") {
+        console.warn(`Client ${client.sessionId} tried to play a policy outside of chancellorPolicy phase or not as chancellor.`);
+        return;
+      }
+
+      const playedPolicy = payload.policy;
+      const policyIndex = this.state.chancellorPolicyHand.indexOf(playedPolicy);
+
+      if (policyIndex > -1) {
+        // Удаляем выбранный закон из руки канцлера и кладем на соответствующую доску
+        this.state.chancellorPolicyHand.splice(policyIndex, 1);
+
+        if (playedPolicy === "liberal") {
+          this.state.liberalPoliciesEnacted++;
+        } else if (playedPolicy === "fascist") {
+          this.state.fascistPoliciesEnacted++;
+        }
+        console.log(`Chancellor ${this.state.players.get(client.sessionId)?.nickname} played a ${playedPolicy} policy.`);
+
+        // Оставшийся закон из руки канцлера отправляем в колоду сброса
+        if (this.state.chancellorPolicyHand.length > 0) {
+          this.state.discardPile.push(this.state.chancellorPolicyHand.shift());
+        }
+        this.state.chancellorPolicyHand.clear();
+
+        // Отправляем всем клиентам информацию о принятом законе
+        this.broadcast("policy-played", {
+          policyType: playedPolicy,
+          liberalPolicies: this.state.liberalPoliciesEnacted,
+          fascistPolicies: this.state.fascistPoliciesEnacted,
+        });
+
+        // Переходим к следующему раунду или фазе игры
+        this.state.currentPhase = "gamePlay"; // Или другая следующая фаза
+        // Здесь можно добавить логику для проверки условий победы/поражения
+      } else {
+        console.warn(`Chancellor ${this.state.players.get(client.sessionId)?.nickname} tried to play an invalid policy: ${playedPolicy}`);
       }
     });
 
@@ -48,10 +175,18 @@ export class MyRoom extends Room<MyRoomState> {
             // Распределение ролей
             this.assignRoles();
 
+            // Инициализация порядка игроков для циклического выбора президента
+            this.state.playerOrder.clear();
+            Array.from(this.state.players.keys()).forEach(sessionId => this.state.playerOrder.push(sessionId));
+
             // Задержка перед выбором президента
             this.clock.setTimeout(() => {
               this.selectPresident();
             }, 5000); // 5 секунд задержки
+
+            // Инициализация колоды законов
+            this.initializePolicyDeck();
+            console.log(`Policy deck initialized with ${this.state.policyDeck.length} policies.`);
 
           }, 1000); // 1 секунда задержки
 
@@ -218,23 +353,191 @@ export class MyRoom extends Room<MyRoomState> {
 
   // Функция для выбора президента
   selectPresident() {
-    const players = Array.from(this.state.players.keys());
-    if (players.length === 0) {
-      console.warn("Cannot select president: no players in the room.");
+    if (this.state.playerOrder.length === 0) {
+      console.warn("Cannot select president: no players in playerOrder.");
       return;
     }
 
-    const randomIndex = Math.floor(Math.random() * players.length);
-    const presidentSessionId = players[randomIndex];
-    this.state.presidentId = presidentSessionId;
+    // Выбираем президента по циклу из playerOrder
+    let currentPresidentIndex = -1;
+    if (this.state.currentPresidentCandidateId) {
+      currentPresidentIndex = this.state.playerOrder.indexOf(this.state.currentPresidentCandidateId);
+    }
+
+    const nextPresidentIndex = (currentPresidentIndex + 1) % this.state.playerOrder.length;
+    const presidentSessionId = this.state.playerOrder[nextPresidentIndex];
+    this.state.currentPresidentCandidateId = presidentSessionId; // Устанавливаем кандидата в президенты
 
     const presidentNickname = this.state.players.get(presidentSessionId)?.nickname || "Unknown";
-    console.log(`President selected: ${presidentNickname} (${presidentSessionId})`);
+    console.log(`President candidate selected: ${presidentNickname} (${presidentSessionId})`);
 
-    // Отправляем одно широковещательное сообщение всем клиентам
-    this.broadcast("president-info", {
-      presidentId: presidentSessionId,
-      presidentNickname: presidentNickname,
+    // Отправляем одно широковещательное сообщение всем клиентам о кандидате в президенты
+    this.broadcast("president-candidate-info", {
+      presidentCandidateId: presidentSessionId,
+      presidentCandidateNickname: presidentNickname,
     });
+
+    // Отправляем сообщение только кандидату в президенты для выбора канцлера
+    const presidentClient = this.clients.find(c => c.sessionId === presidentSessionId);
+    if (presidentClient) {
+      const otherPlayers = Array.from(this.state.players.entries())
+        .filter(([sessionId, player]) => sessionId !== presidentSessionId)
+        .map(([sessionId, player]) => ({ sessionId: sessionId, nickname: player.nickname }));
+      presidentClient.send("select-chancellor", { players: otherPlayers });
+      this.state.currentPhase = "selectingChancellor";
+      console.log(`President candidate ${presidentNickname} (${presidentSessionId}) is now selecting a chancellor.`);
+    }
+  }
+
+  // Функция для циклического выбора следующего президента
+  selectNextPresident() {
+    // Если текущего президента еще нет, выбираем первого из списка
+    if (!this.state.currentPresidentCandidateId) {
+      this.selectPresident();
+      return;
+    }
+
+    const currentPresidentIndex = this.state.playerOrder.indexOf(this.state.currentPresidentCandidateId);
+    const nextPresidentIndex = (currentPresidentIndex + 1) % this.state.playerOrder.length;
+    const newPresidentCandidateId = this.state.playerOrder[nextPresidentIndex];
+
+    this.state.currentPresidentCandidateId = newPresidentCandidateId;
+    const presidentNickname = this.state.players.get(newPresidentCandidateId)?.nickname || "Unknown";
+    console.log(`Next president candidate selected: ${presidentNickname} (${newPresidentCandidateId})`);
+  }
+
+  // Функция для начала фазы голосования
+  startVotingPhase() {
+    this.state.currentPhase = "voting";
+    this.state.votesFor = 0;
+    this.state.votesAgainst = 0;
+    this.state.votedPlayers.clear();
+
+    // Отправляем всем клиентам сообщение о начале голосования
+    this.broadcast("start-vote", {
+      presidentCandidateId: this.state.currentPresidentCandidateId,
+      presidentCandidateNickname: this.state.players.get(this.state.currentPresidentCandidateId)?.nickname,
+      chancellorCandidateId: this.state.currentChancellorCandidateId,
+      chancellorCandidateNickname: this.state.players.get(this.state.currentChancellorCandidateId)?.nickname,
+    });
+    console.log("Voting phase started.");
+  }
+
+  // Функция для завершения фазы голосования
+  endVotingPhase() {
+    this.state.currentPhase = "voting-results";
+    const presidentNickname = this.state.players.get(this.state.currentPresidentCandidateId)?.nickname || "Unknown";
+    const chancellorNickname = this.state.players.get(this.state.currentChancellorCandidateId)?.nickname || "Unknown";
+
+    // Определяем победителя
+    let votePassed = this.state.votesFor > this.state.players.size / 2;
+
+    let resultMessage = "";
+    if (votePassed) {
+      this.state.presidentId = this.state.currentPresidentCandidateId;
+      this.state.chancellorId = this.state.currentChancellorCandidateId;
+      resultMessage = `Vote PASSED! ${presidentNickname} is President and ${chancellorNickname} is Chancellor.`;
+    } else {
+      this.selectNextPresident(); // Выбираем следующего президента
+      resultMessage = `Vote FAILED! New president will be selected.`;
+    }
+
+    // Отправляем результаты голосования всем клиентам
+    this.broadcast("voting-results", {
+      presidentCandidateId: this.state.currentPresidentCandidateId,
+      presidentCandidateNickname: presidentNickname,
+      chancellorCandidateId: this.state.currentChancellorCandidateId,
+      chancellorCandidateNickname: chancellorNickname,
+      votePassed: votePassed,
+      votesFor: this.state.votesFor,
+      votesAgainst: this.state.votesAgainst,
+      message: resultMessage
+    });
+    console.log(resultMessage);
+
+    // Очищаем голоса и голосовавших
+    this.state.votesFor = 0;
+    this.state.votesAgainst = 0;
+    this.state.votedPlayers.clear();
+
+    if (!votePassed) {
+      // Если голосование провалилось, снова запускаем процесс выбора президента/канцлера
+      this.clock.setTimeout(() => {
+        this.selectPresident(); // Начинаем новый раунд выбора президента и канцлера
+      }, 5000); // Задержка перед началом нового раунда
+    } else {
+      // Если голосование прошло, игра продолжается с назначенными президентом и канцлером
+      // Здесь можно добавить логику для следующего шага игры (например, раздача карт)
+      this.state.currentPhase = "gamePlay"; // Или другая следующая фаза
+      console.log("Government successfully elected. Proceeding to policy phase.");
+      this.clock.setTimeout(() => {
+        this.startPolicyPhase();
+      }, 3000); // Задержка перед началом фазы политики
+    }
+  }
+
+  // Функция для начала фазы принятия законов
+  startPolicyPhase() {
+    this.state.currentPhase = "presidentPolicy";
+    this.drawPoliciesForPresident();
+  }
+
+  // Функция для взятия 3-х законов президентом
+  drawPoliciesForPresident() {
+    this.state.presidentPolicyHand.clear();
+    // Если в колоде меньше 3-х карт, перемешиваем сброс обратно в колоду
+    if (this.state.policyDeck.length < 3) {
+      this.reshuffleDiscardPile();
+    }
+
+    // Президент берет 3 карты
+    for (let i = 0; i < 3; i++) {
+      if (this.state.policyDeck.length > 0) {
+        this.state.presidentPolicyHand.push(this.state.policyDeck.shift());
+      } else {
+        console.warn("Policy deck is empty, cannot draw 3 policies.");
+        break;
+      }
+    }
+
+    const presidentClient = this.clients.find(c => c.sessionId === this.state.presidentId);
+    if (presidentClient) {
+      presidentClient.send("president-draw-policies", { policies: this.state.presidentPolicyHand.toArray() });
+      console.log(`President ${this.state.players.get(this.state.presidentId)?.nickname} drew 3 policies.`);
+    }
+  }
+
+  // Функция для перемешивания сброса обратно в колоду
+  reshuffleDiscardPile() {
+    console.log("Reshuffling discard pile into policy deck.");
+    this.state.policyDeck.push(...this.state.discardPile.toArray());
+    this.state.discardPile.clear();
+    this.shuffleArray(this.state.policyDeck);
+  }
+
+  // Инициализация колоды законов
+  initializePolicyDeck() {
+    this.state.policyDeck.clear();
+    this.state.discardPile.clear();
+
+    // 6 либеральных законов
+    for (let i = 0; i < 6; i++) {
+      this.state.policyDeck.push("liberal");
+    }
+
+    // 11 фашистских законов
+    for (let i = 0; i < 11; i++) {
+      this.state.policyDeck.push("fascist");
+    }
+
+    this.shuffleArray(this.state.policyDeck);
+  }
+
+  // Вспомогательная функция для перемешивания массива
+  shuffleArray(array: ArraySchema<string>) {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [array[i], array[j]] = [array[j], array[i]];
+    }
   }
 }

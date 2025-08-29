@@ -419,6 +419,8 @@ export class LobbyScene extends Phaser.Scene {
 export class GameScene extends Phaser.Scene {
   room: Room;
   roomId: string;
+  liberalPolicyCards: Phaser.GameObjects.Rectangle[] = [];
+  fascistPolicyCards: Phaser.GameObjects.Rectangle[] = [];
 
   constructor() {
     super({ key: 'GameScene' });
@@ -442,6 +444,45 @@ export class GameScene extends Phaser.Scene {
     // Add new unified president-info message listener here
     this.room.onMessage("president-info", (message) => {
       this.displayPresidentInfoCard(message.presidentId, message.presidentNickname);
+    });
+
+    // Add new select-chancellor message listener here
+    this.room.onMessage("select-chancellor", (message) => {
+      this.displayChancellorSelection(message.players);
+    });
+
+    // Add new chancellor-info message listener here
+    this.room.onMessage("chancellor-info", (message) => {
+      this.displayChancellorInfoCard(message.chancellorId, message.chancellorNickname);
+    });
+
+    // Add new president-candidate-info message listener here
+    this.room.onMessage("president-candidate-info", (message) => {
+      // Можно просто игнорировать это сообщение на клиенте, так как `start-vote` содержит ту же информацию.
+      console.log(`President candidate is: ${message.presidentCandidateNickname}`);
+    });
+
+    // Add new start-vote message listener here
+    this.room.onMessage("start-vote", (message) => {
+      this.displayVotingUI(message.presidentCandidateId, message.presidentCandidateNickname, message.chancellorCandidateId, message.chancellorCandidateNickname);
+    });
+
+    // Add new voting-results message listener here
+    this.room.onMessage("voting-results", (message) => {
+      this.displayVotingResults(message.votePassed, message.message);
+    });
+
+    // Add new policy phase message listeners here
+    this.room.onMessage("president-draw-policies", (message) => {
+      this.displayPresidentPolicySelection(message.policies);
+    });
+
+    this.room.onMessage("chancellor-select-policy", (message) => {
+      this.displayChancellorPolicySelection(message.policies);
+    });
+
+    this.room.onMessage("policy-played", (message) => {
+      this.updatePolicyBoards(message.policyType, message.liberalPolicies, message.fascistPolicies);
     });
 
     // Кнопка "Назад к лобби"
@@ -497,6 +538,216 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(5000, () => {
       presidentCard.destroy();
       presidentText.destroy();
+    }, [], this);
+  }
+
+  // New function for displaying chancellor selection to the president
+  displayChancellorSelection(players: { sessionId: string; nickname: string }[]) {
+    const selectionContainer = this.add.container(0, 0);
+    selectionContainer.setDepth(1002);
+
+    const background = this.add.rectangle(400, 300, 700, 400, 0x000000, 0.8);
+    selectionContainer.add(background);
+
+    const title = this.add.text(400, 150, 'SELECT CHANCELLOR', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    selectionContainer.add(title);
+
+    players.forEach((player, index) => {
+      const y = 220 + index * 60;
+
+      const playerCard = this.add.rectangle(400, y, 400, 50, 0x2196F3, 0.9);
+      playerCard.setInteractive();
+      playerCard.on('pointerdown', () => {
+        this.room.send("chancellor-selected", { chancellorId: player.sessionId });
+        selectionContainer.destroy(true);
+      });
+      selectionContainer.add(playerCard);
+
+      const playerText = this.add.text(400, y, player.nickname, { fontSize: '24px', color: '#ffffff' }).setOrigin(0.5);
+      selectionContainer.add(playerText);
+    });
+  }
+
+  // New function for displaying chancellor info to all players
+  displayChancellorInfoCard(chancellorId: string, chancellorNickname: string) {
+    const isCurrentPlayerChancellor = chancellorId === this.room.sessionId;
+    const cardColor = isCurrentPlayerChancellor ? 0x00FF00 : 0x008000; // Green for chancellor, darker green for others
+    const messageText = isCurrentPlayerChancellor ? 'YOU ARE CHANCELLOR!' : `${chancellorNickname.toUpperCase()} IS CHANCELLOR!`;
+
+    const chancellorCard = this.add.rectangle(400, 300, 500, 200, cardColor, 0.7);
+    chancellorCard.setScrollFactor(0);
+    chancellorCard.setDepth(1000);
+
+    const chancellorText = this.add.text(400, 300, messageText,
+      { fontSize: '48px', color: '#ffffff' }).setOrigin(0.5);
+    chancellorText.setScrollFactor(0);
+    chancellorText.setDepth(1001);
+
+    this.time.delayedCall(5000, () => {
+      chancellorCard.destroy();
+      chancellorText.destroy();
+    }, [], this);
+  }
+
+  // New function to display voting UI
+  displayVotingUI(presidentId: string, presidentNickname: string, chancellorId: string, chancellorNickname: string) {
+    const votingContainer = this.add.container(0, 0);
+    votingContainer.setDepth(1002);
+
+    const background = this.add.rectangle(400, 300, 700, 400, 0x000000, 0.8);
+    votingContainer.add(background);
+
+    const title = this.add.text(400, 100, 'VOTE FOR GOVERNMENT', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    votingContainer.add(title);
+
+    // President Card
+    const presidentCardBg = this.add.rectangle(250, 220, 250, 100, 0x0000FF, 0.9);
+    votingContainer.add(presidentCardBg);
+    const presidentCardText = this.add.text(250, 220, `President:\n${presidentNickname}`, { fontSize: '20px', color: '#ffffff', align: 'center' }).setOrigin(0.5);
+    votingContainer.add(presidentCardText);
+
+    // Chancellor Card
+    const chancellorCardBg = this.add.rectangle(550, 220, 250, 100, 0x00FF00, 0.9);
+    votingContainer.add(chancellorCardBg);
+    const chancellorCardText = this.add.text(550, 220, `Chancellor:\n${chancellorNickname}`, { fontSize: '20px', color: '#ffffff', align: 'center' }).setOrigin(0.5);
+    votingContainer.add(chancellorCardText);
+
+    // Vote "For" button
+    const voteForButton = this.add.rectangle(300, 400, 150, 50, 0x4CAF50);
+    voteForButton.setInteractive();
+    voteForButton.on('pointerdown', () => {
+      this.room.send("cast-vote", { vote: "for" });
+      votingContainer.destroy(true);
+    });
+    votingContainer.add(voteForButton);
+    const voteForText = this.add.text(300, 400, 'FOR', { fontSize: '24px', color: '#ffffff' }).setOrigin(0.5);
+    votingContainer.add(voteForText);
+
+    // Vote "Against" button
+    const voteAgainstButton = this.add.rectangle(500, 400, 150, 50, 0xF44336);
+    voteAgainstButton.setInteractive();
+    voteAgainstButton.on('pointerdown', () => {
+      this.room.send("cast-vote", { vote: "against" });
+      votingContainer.destroy(true);
+    });
+    votingContainer.add(voteAgainstButton);
+    const voteAgainstText = this.add.text(500, 400, 'AGAINST', { fontSize: '24px', color: '#ffffff' }).setOrigin(0.5);
+    votingContainer.add(voteAgainstText);
+
+    // Disable voting buttons if the player has already voted (based on state, if implemented)
+    // For now, destroy the container after voting.
+  }
+
+  // New function to display voting results
+  displayVotingResults(votePassed: boolean, message: string) {
+    const resultsContainer = this.add.container(0, 0);
+    resultsContainer.setDepth(1002);
+
+    const background = this.add.rectangle(400, 300, 700, 400, 0x000000, 0.8);
+    resultsContainer.add(background);
+
+    const resultText = this.add.text(400, 300, message, { fontSize: '32px', color: '#ffffff', align: 'center' }).setOrigin(0.5);
+    resultsContainer.add(resultText);
+
+    this.time.delayedCall(5000, () => {
+      resultsContainer.destroy(true);
+      // Здесь можно добавить логику для перехода к следующей фазе игры
+    }, [], this);
+  }
+
+  // New function to display president's policy selection UI
+  displayPresidentPolicySelection(policies: string[]) {
+    const presidentPolicyContainer = this.add.container(0, 0);
+    presidentPolicyContainer.setDepth(1002);
+
+    const background = this.add.rectangle(400, 300, 700, 400, 0x000000, 0.8);
+    presidentPolicyContainer.add(background);
+
+    const title = this.add.text(400, 100, 'PRESIDENT: DISCARD ONE POLICY', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    presidentPolicyContainer.add(title);
+
+    policies.forEach((policy, index) => {
+      const x = 200 + index * 200;
+      const policyCard = this.add.rectangle(x, 300, 150, 200, policy === "liberal" ? 0x0000FF : 0xFF0000, 0.9); // Blue for liberal, Red for fascist
+      policyCard.setInteractive();
+      policyCard.on('pointerdown', () => {
+        this.room.send("president-discard-policy", { policy: policy });
+        presidentPolicyContainer.destroy(true);
+      });
+      presidentPolicyContainer.add(policyCard);
+
+      const policyText = this.add.text(x, 300, policy.toUpperCase(), { fontSize: '24px', color: '#ffffff' }).setOrigin(0.5);
+      presidentPolicyContainer.add(policyText);
+    });
+  }
+
+  // New function to display chancellor's policy selection UI
+  displayChancellorPolicySelection(policies: string[]) {
+    const chancellorPolicyContainer = this.add.container(0, 0);
+    chancellorPolicyContainer.setDepth(1002);
+
+    const background = this.add.rectangle(400, 300, 700, 400, 0x000000, 0.8);
+    chancellorPolicyContainer.add(background);
+
+    const title = this.add.text(400, 100, 'CHANCELLOR: PLAY ONE POLICY', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    chancellorPolicyContainer.add(title);
+
+    policies.forEach((policy, index) => {
+      const x = 300 + index * 200;
+      const policyCard = this.add.rectangle(x, 300, 150, 200, policy === "liberal" ? 0x0000FF : 0xFF0000, 0.9);
+      policyCard.setInteractive();
+      policyCard.on('pointerdown', () => {
+        this.room.send("chancellor-play-policy", { policy: policy });
+        chancellorPolicyContainer.destroy(true);
+      });
+      chancellorPolicyContainer.add(policyCard);
+
+      const policyText = this.add.text(x, 300, policy.toUpperCase(), { fontSize: '24px', color: '#ffffff' }).setOrigin(0.5);
+      chancellorPolicyContainer.add(policyText);
+    });
+  }
+
+  // Function to update policy boards (liberal and fascist)
+  updatePolicyBoards(policyType: string, liberalPolicies: number, fascistPolicies: number) {
+    console.log(`Policy played: ${policyType}. Liberal: ${liberalPolicies}, Fascist: ${fascistPolicies}`);
+
+    // Очищаем текущие доски (можно сделать это более умно, чтобы не удалять каждый раз все)
+    this.liberalPolicyCards.forEach(card => card.destroy());
+    this.fascistPolicyCards.forEach(card => card.destroy());
+    this.liberalPolicyCards = [];
+    this.fascistPolicyCards = [];
+
+    const liberalBoardX = 200;
+    const fascistBoardX = 600;
+    const startY = 200;
+    const policyHeight = 50;
+    const policySpacing = 10;
+
+    // Добавляем либеральные законы
+    for (let i = 0; i < liberalPolicies; i++) {
+      const y = startY + i * (policyHeight + policySpacing);
+      const card = this.add.rectangle(liberalBoardX, y, 100, policyHeight, 0x0000FF, 0.9);
+      this.liberalPolicyCards.push(card);
+      this.add.text(liberalBoardX, y, 'LIBERAL', { fontSize: '14px', color: '#ffffff' }).setOrigin(0.5);
+    }
+
+    // Добавляем фашистские законы
+    for (let i = 0; i < fascistPolicies; i++) {
+      const y = startY + i * (policyHeight + policySpacing);
+      const card = this.add.rectangle(fascistBoardX, y, 100, policyHeight, 0xFF0000, 0.9);
+      this.fascistPolicyCards.push(card);
+      this.add.text(fascistBoardX, y, 'FASCIST', { fontSize: '14px', color: '#ffffff' }).setOrigin(0.5);
+    }
+
+    // Обновляем счетчики законов
+    // Можно добавить текстовые объекты для отображения количества законов
+    const liberalCountText = this.add.text(liberalBoardX, startY - 50, `Liberal: ${liberalPolicies}/5`, { fontSize: '18px', color: '#0000FF' }).setOrigin(0.5);
+    const fascistCountText = this.add.text(fascistBoardX, startY - 50, `Fascist: ${fascistPolicies}/6`, { fontSize: '18px', color: '#FF0000' }).setOrigin(0.5);
+
+    // Удаляем их после небольшой задержки или храним ссылки и обновляем
+    this.time.delayedCall(5000, () => {
+      liberalCountText.destroy();
+      fascistCountText.destroy();
     }, [], this);
   }
 }
