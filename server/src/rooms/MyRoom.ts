@@ -142,9 +142,58 @@ export class MyRoom extends Room<MyRoomState> {
 
         // Переходим к следующему раунду или фазе игры
         this.state.currentPhase = "gamePlay"; // Или другая следующая фаза
-        // Здесь можно добавить логику для проверки условий победы/поражения
+        // Проверка на фазу убийства
+        if (playedPolicy === "fascist" && (this.state.fascistPoliciesEnacted === 4 || this.state.fascistPoliciesEnacted === 5)) {
+          this.startAssassinationPhase();
+        } else {
+          const gameOver = this.checkWinConditions();
+          if (!gameOver) {
+            this.clock.setTimeout(() => {
+              this.selectNextPresident();
+              this.selectPresident();
+            }, 5000);
+          }
+        }
       } else {
         console.warn(`Chancellor ${this.state.players.get(client.sessionId)?.nickname} tried to play an invalid policy: ${playedPolicy}`);
+      }
+    });
+
+    // Обработчик убийства игрока президентом
+    this.onMessage("president-assassinate-player", (client, payload) => {
+      if (client.sessionId !== this.state.presidentId || this.state.currentPhase !== "assassination") {
+        console.warn(`Client ${client.sessionId} tried to assassinate a player outside of assassination phase or not as president.`);
+        return;
+      }
+
+      const targetPlayerId = payload.targetId;
+      const targetPlayer = this.state.players.get(targetPlayerId);
+
+      if (targetPlayer && !targetPlayer.isEliminated) {
+        targetPlayer.isEliminated = true;
+        console.log(`President ${this.state.players.get(client.sessionId)?.nickname} assassinated ${targetPlayer.nickname}.`);
+
+        // Удаляем игрока из порядка выбора президента
+        const playerIndex = this.state.playerOrder.indexOf(targetPlayerId);
+        if (playerIndex > -1) {
+          this.state.playerOrder.splice(playerIndex, 1);
+        }
+
+        // Отправляем всем клиентам информацию об убитом игроке
+        this.broadcast("player-eliminated", { eliminatedPlayerId: targetPlayerId, message: `${targetPlayer.nickname} was assassinated!` });
+
+        // Проверяем условия победы после убийства
+        const gameOver = this.checkWinConditions();
+
+        // Если игра не закончилась, переходим к следующему раунду выборов президента
+        if (!gameOver) {
+          this.clock.setTimeout(() => {
+            this.selectNextPresident();
+            this.selectPresident();
+          }, 5000);
+        }
+      } else {
+        console.warn(`President ${this.state.players.get(client.sessionId)?.nickname} tried to assassinate an invalid or already eliminated player: ${targetPlayerId}`);
       }
     });
 
@@ -358,14 +407,39 @@ export class MyRoom extends Room<MyRoomState> {
       return;
     }
 
-    // Выбираем президента по циклу из playerOrder
-    let currentPresidentIndex = -1;
-    if (this.state.currentPresidentCandidateId) {
-      currentPresidentIndex = this.state.playerOrder.indexOf(this.state.currentPresidentCandidateId);
+    // Фильтруем выбывших игроков из playerOrder
+    const activePlayerOrder = this.state.playerOrder.filter(sessionId => !this.state.players.get(sessionId)?.isEliminated);
+
+    if (activePlayerOrder.length === 0) {
+      console.warn("Cannot select president: no active players left.");
+      // Здесь можно добавить логику для завершения игры, если не осталось активных игроков
+      return;
     }
 
-    const nextPresidentIndex = (currentPresidentIndex + 1) % this.state.playerOrder.length;
-    const presidentSessionId = this.state.playerOrder[nextPresidentIndex];
+    // Выбираем президента по циклу из activePlayerOrder
+    let currentPresidentIndex = -1;
+    if (this.state.currentPresidentCandidateId) {
+      currentPresidentIndex = activePlayerOrder.indexOf(this.state.currentPresidentCandidateId);
+    }
+
+    let nextPresidentIndex = (currentPresidentIndex + 1) % activePlayerOrder.length;
+    let presidentSessionId = activePlayerOrder[nextPresidentIndex];
+
+    // Если выбранный президент выбыл, ищем следующего активного
+    let attempts = 0;
+    while (this.state.players.get(presidentSessionId)?.isEliminated && attempts < activePlayerOrder.length) {
+      nextPresidentIndex = (nextPresidentIndex + 1) % activePlayerOrder.length;
+      presidentSessionId = activePlayerOrder[nextPresidentIndex];
+      attempts++;
+    }
+
+    // Если все игроки выбыли или что-то пошло не так (по идее не должно быть достигнуто, если activePlayerOrder.length === 0 обработан выше)
+    if (this.state.players.get(presidentSessionId)?.isEliminated) {
+      console.warn("No eligible president found after filtering eliminated players.");
+      // Дополнительная логика обработки ситуации, когда не удалось найти президента
+      return;
+    }
+
     this.state.currentPresidentCandidateId = presidentSessionId; // Устанавливаем кандидата в президенты
 
     const presidentNickname = this.state.players.get(presidentSessionId)?.nickname || "Unknown";
@@ -381,7 +455,7 @@ export class MyRoom extends Room<MyRoomState> {
     const presidentClient = this.clients.find(c => c.sessionId === presidentSessionId);
     if (presidentClient) {
       const otherPlayers = Array.from(this.state.players.entries())
-        .filter(([sessionId, player]) => sessionId !== presidentSessionId)
+        .filter(([sessionId, player]) => sessionId !== presidentSessionId && !player.isEliminated)
         .map(([sessionId, player]) => ({ sessionId: sessionId, nickname: player.nickname }));
       presidentClient.send("select-chancellor", { players: otherPlayers });
       this.state.currentPhase = "selectingChancellor";
@@ -391,15 +465,41 @@ export class MyRoom extends Room<MyRoomState> {
 
   // Функция для циклического выбора следующего президента
   selectNextPresident() {
-    // Если текущего президента еще нет, выбираем первого из списка
-    if (!this.state.currentPresidentCandidateId) {
-      this.selectPresident();
+    // Фильтруем выбывших игроков из playerOrder
+    const activePlayerOrder = this.state.playerOrder.filter(sessionId => !this.state.players.get(sessionId)?.isEliminated);
+
+    if (activePlayerOrder.length === 0) {
+      console.warn("Cannot select next president: no active players left.");
+      // Здесь можно добавить логику для завершения игры, если не осталось активных игроков
       return;
     }
 
-    const currentPresidentIndex = this.state.playerOrder.indexOf(this.state.currentPresidentCandidateId);
-    const nextPresidentIndex = (currentPresidentIndex + 1) % this.state.playerOrder.length;
-    const newPresidentCandidateId = this.state.playerOrder[nextPresidentIndex];
+    // Если текущего президента еще нет, выбираем первого из активного списка
+    if (!this.state.currentPresidentCandidateId) {
+      this.state.currentPresidentCandidateId = activePlayerOrder[0];
+      const presidentNickname = this.state.players.get(this.state.currentPresidentCandidateId)?.nickname || "Unknown";
+      console.log(`Next president candidate selected (initial): ${presidentNickname} (${this.state.currentPresidentCandidateId})`);
+      return;
+    }
+
+    let currentPresidentIndex = activePlayerOrder.indexOf(this.state.currentPresidentCandidateId);
+    let nextPresidentIndex = (currentPresidentIndex + 1) % activePlayerOrder.length;
+    let newPresidentCandidateId = activePlayerOrder[nextPresidentIndex];
+
+    // Если выбранный президент выбыл, ищем следующего активного
+    let attempts = 0;
+    while (this.state.players.get(newPresidentCandidateId)?.isEliminated && attempts < activePlayerOrder.length) {
+      nextPresidentIndex = (nextPresidentIndex + 1) % activePlayerOrder.length;
+      newPresidentCandidateId = activePlayerOrder[nextPresidentIndex];
+      attempts++;
+    }
+
+    // Если все игроки выбыли или что-то пошло не так (по идее не должно быть достигнуто, если activePlayerOrder.length === 0 обработан выше)
+    if (this.state.players.get(newPresidentCandidateId)?.isEliminated) {
+      console.warn("No eligible next president found after filtering eliminated players.");
+      // Дополнительная логика обработки ситуации, когда не удалось найти президента
+      return;
+    }
 
     this.state.currentPresidentCandidateId = newPresidentCandidateId;
     const presidentNickname = this.state.players.get(newPresidentCandidateId)?.nickname || "Unknown";
@@ -539,5 +639,54 @@ export class MyRoom extends Room<MyRoomState> {
       const j = Math.floor(Math.random() * (i + 1));
       [array[i], array[j]] = [array[j], array[i]];
     }
+  }
+
+  // Функция для проверки условий победы
+  checkWinConditions(): boolean {
+    // Проверка на убийство Гитлера (победа либералов)
+    const hitlerPlayer = Array.from(this.state.players.values()).find(player => player.role === "hitler");
+    if (hitlerPlayer && hitlerPlayer.isEliminated) {
+      this.gameOver("liberal", "Liberals win! Hitler was assassinated!");
+      return true;
+    }
+
+    // Проверка на немедленную победу фашистов (Гитлер-канцлер и 4-й фашистский закон)
+    const chancellorPlayer = this.state.players.get(this.state.chancellorId);
+    if (chancellorPlayer && chancellorPlayer.role === "hitler" && this.state.fascistPoliciesEnacted === 4) {
+      this.gameOver("fascist", "Fascists win! Hitler as Chancellor enacted the 4th Fascist Policy!");
+      return true;
+    }
+
+    if (this.state.liberalPoliciesEnacted >= 5) {
+      this.gameOver("liberal", "Liberals win! 5 Liberal Policies enacted!");
+      return true;
+    } else if (this.state.fascistPoliciesEnacted >= 6) {
+      this.gameOver("fascist", "Fascists win! 6 Fascist Policies enacted!");
+      return true;
+    } else {
+      console.log("No win conditions met. Proceeding to next round.");
+      return false;
+    }
+  }
+
+  // Функция для начала фазы убийства
+  startAssassinationPhase() {
+    this.state.currentPhase = "assassination";
+    console.log(`President ${this.state.players.get(this.state.presidentId)?.nickname} is selecting a player to assassinate.`);
+
+    const presidentClient = this.clients.find(c => c.sessionId === this.state.presidentId);
+    if (presidentClient) {
+      const eligibleTargets = Array.from(this.state.players.entries())
+        .filter(([sessionId, player]) => sessionId !== this.state.presidentId && !player.isEliminated)
+        .map(([sessionId, player]) => ({ sessionId: sessionId, nickname: player.nickname }));
+      presidentClient.send("start-assassination", { targets: eligibleTargets });
+    }
+  }
+
+  // Функция для завершения игры
+  gameOver(winner: "liberal" | "fascist", message?: string) {
+    this.state.currentPhase = "gameOver";
+    console.log(`Game Over! ${winner.toUpperCase()} wins! ${message || ''}`);
+    this.broadcast("game-over", { winner: winner, message: message });
   }
 }

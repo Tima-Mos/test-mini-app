@@ -367,16 +367,16 @@ export class LobbyScene extends Phaser.Scene {
 
     const players = Array.from((this.room.state.players as Map<string, any>).entries());
 
-    players.forEach(([sessionId, player]: [string, any], index: number) => {
+    players.forEach(([sessionId, player]: [string, { nickname: string, ready: boolean, isEliminated: boolean }], index: number) => {
       const y = 150 + index * 50;
 
       // Фон для игрока
       const isCurrentPlayer = sessionId === this.room.sessionId;
       const isCreator = sessionId === this.room.state.creatorId;
-
       let bgColor = 0xE0E0E0;
       if (isCurrentPlayer) bgColor = 0xFFEB3B; // Желтый для текущего игрока
       if (isCreator) bgColor = 0xFFC107; // Золотой для создателя
+      if (player.isEliminated) bgColor = 0x808080; // Серый для выбывших игроков
 
       const playerBg = this.add.rectangle(400, y, 400, 40, bgColor);
 
@@ -384,6 +384,7 @@ export class LobbyScene extends Phaser.Scene {
       let nameText = player.nickname;
       if (isCreator) nameText += " (Creator)";
       if (isCurrentPlayer) nameText += " (You)";
+      if (player.isEliminated) nameText += " (ELIMINATED)";
 
       const playerName = this.add.text(250, y, nameText, {
         fontSize: '16px',
@@ -483,6 +484,20 @@ export class GameScene extends Phaser.Scene {
 
     this.room.onMessage("policy-played", (message) => {
       this.updatePolicyBoards(message.policyType, message.liberalPolicies, message.fascistPolicies);
+    });
+
+    // Add new game-over message listener here
+    this.room.onMessage("game-over", (message) => {
+      this.displayGameOver(message.winner, message.message);
+    });
+
+    // Add new assassination message listeners
+    this.room.onMessage("start-assassination", (message) => {
+      this.displayAssassinationSelection(message.targets);
+    });
+
+    this.room.onMessage("player-eliminated", (message) => {
+      this.displayPlayerEliminated(message.eliminatedPlayerId, message.message);
     });
 
     // Кнопка "Назад к лобби"
@@ -748,6 +763,72 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(5000, () => {
       liberalCountText.destroy();
       fascistCountText.destroy();
+    }, [], this);
+  }
+
+  // New function to display game over screen
+  displayGameOver(winner: string, message: string) {
+    const gameOverContainer = this.add.container(0, 0);
+    gameOverContainer.setDepth(1003); // Выше всех остальных UI
+
+    const background = this.add.rectangle(400, 300, 800, 600, 0x000000, 0.9);
+    gameOverContainer.add(background);
+
+    const winnerText = this.add.text(400, 250, `GAME OVER!\n${winner.toUpperCase()} TEAM WINS!\n${message}`, { fontSize: '48px', color: '#ffffff', align: 'center' }).setOrigin(0.5);
+    gameOverContainer.add(winnerText);
+
+    const restartButton = this.add.rectangle(400, 400, 200, 50, 0x2196F3);
+    restartButton.setInteractive();
+    restartButton.on('pointerdown', () => {
+      // Перезагрузка страницы или возврат в главное меню
+      window.location.reload();
+    });
+    gameOverContainer.add(restartButton);
+
+    const restartText = this.add.text(400, 400, 'RESTART', { fontSize: '24px', color: '#ffffff' }).setOrigin(0.5);
+    gameOverContainer.add(restartText);
+  }
+
+  // New function to display assassination target selection to the president
+  displayAssassinationSelection(targets: { sessionId: string; nickname: string }[]) {
+    const selectionContainer = this.add.container(0, 0);
+    selectionContainer.setDepth(1002);
+
+    const background = this.add.rectangle(400, 300, 700, 400, 0x000000, 0.8);
+    selectionContainer.add(background);
+
+    const title = this.add.text(400, 100, 'PRESIDENT: SELECT PLAYER TO ASSASSINATE', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    selectionContainer.add(title);
+
+    targets.forEach((player, index) => {
+      const y = 180 + index * 60;
+
+      const playerCard = this.add.rectangle(400, y, 400, 50, 0xF44336, 0.9); // Red for assassination target
+      playerCard.setInteractive();
+      playerCard.on('pointerdown', () => {
+        this.room.send("president-assassinate-player", { targetId: player.sessionId });
+        selectionContainer.destroy(true);
+      });
+      selectionContainer.add(playerCard);
+
+      const playerText = this.add.text(400, y, player.nickname, { fontSize: '24px', color: '#ffffff' }).setOrigin(0.5);
+      selectionContainer.add(playerText);
+    });
+  }
+
+  // New function to display player eliminated message
+  displayPlayerEliminated(eliminatedPlayerId: string, message: string) {
+    const eliminatedContainer = this.add.container(0, 0);
+    eliminatedContainer.setDepth(1003);
+
+    const background = this.add.rectangle(400, 300, 800, 600, 0x000000, 0.9);
+    eliminatedContainer.add(background);
+
+    const eliminatedText = this.add.text(400, 300, message, { fontSize: '48px', color: '#ffffff', align: 'center' }).setOrigin(0.5);
+    eliminatedContainer.add(eliminatedText);
+
+    this.time.delayedCall(5000, () => {
+      eliminatedContainer.destroy(true);
     }, [], this);
   }
 }

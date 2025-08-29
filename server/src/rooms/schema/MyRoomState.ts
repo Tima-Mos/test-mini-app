@@ -6,6 +6,7 @@ export class Player extends Schema {
   @type("string") nickname: string;
   @type("boolean") ready: boolean = false;
   @type("string") role: string; // Добавляем свойство для роли игрока
+  @type("boolean") isEliminated: boolean = false; // Добавляем свойство для отслеживания выбывших игроков
   inputQueue: any[] = [];
 }
 
