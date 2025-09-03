@@ -21,7 +21,7 @@ export class MyRoomState extends Schema {
   @type("number") votesFor: number = 0; // Количество голосов "за"
   @type("number") votesAgainst: number = 0; // Количество голосов "против"
   @type({ map: "boolean" }) votedPlayers = new MapSchema<boolean>(); // Игроки, которые уже проголосовали
-  @type("string") currentPhase: string = "waiting"; // Текущая фаза игры (waiting, selectingPresident, selectingChancellor, voting, game, presidentPolicy, chancellorPolicy)
+  @type("string") currentPhase: string = "waiting"; // Текущая фаза игры (waiting, selectingPresident, selectingChancellor, voting, game, presidentPolicy, chancellorPolicy, presidentPeek)
   @type(["string"]) playerOrder = new ArraySchema<string>(); // Порядок игроков для циклического выбора президента
   @type("number") liberalPoliciesEnacted: number = 0; // Количество принятых либеральных законов
   @type("number") fascistPoliciesEnacted: number = 0; // Количество принятых фашистских законов
@@ -29,4 +29,5 @@ export class MyRoomState extends Schema {
   @type(["string"]) discardPile = new ArraySchema<string>(); // Колода сброса
   @type(["string"]) presidentPolicyHand = new ArraySchema<string>(); // Законы, выбранные президентом (3 карты)
   @type(["string"]) chancellorPolicyHand = new ArraySchema<string>(); // Законы, переданные канцлеру (2 карты)
+  @type("boolean") isPresidentialPeekActive: boolean = false; // Флаг для отслеживания фазы президентского подсмотра
 }

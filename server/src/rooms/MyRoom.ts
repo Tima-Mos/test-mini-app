@@ -142,8 +142,20 @@ export class MyRoom extends Room<MyRoomState> {
 
         // Переходим к следующему раунду или фазе игры
         this.state.currentPhase = "gamePlay"; // Или другая следующая фаза
-        // Проверка на фазу убийства
-        if (playedPolicy === "fascist" && (this.state.fascistPoliciesEnacted === 4 || this.state.fascistPoliciesEnacted === 5)) {
+        const playerCount = this.state.players.size;
+
+        let shouldPeek = false;
+        if (playedPolicy === "fascist") {
+          if ((playerCount === 7 || playerCount === 8) && this.state.fascistPoliciesEnacted === 2) {
+            shouldPeek = true;
+          } else if ((playerCount === 9 || playerCount === 10) && this.state.fascistPoliciesEnacted === 1) {
+            shouldPeek = true;
+          }
+        }
+
+        if (shouldPeek) {
+          this.startPresidentialPeekPhase();
+        } else if (playedPolicy === "fascist" && (this.state.fascistPoliciesEnacted === 4 || this.state.fascistPoliciesEnacted === 5)) {
           this.startAssassinationPhase();
         } else {
           const gameOver = this.checkWinConditions();
@@ -194,6 +206,47 @@ export class MyRoom extends Room<MyRoomState> {
         }
       } else {
         console.warn(`President ${this.state.players.get(client.sessionId)?.nickname} tried to assassinate an invalid or already eliminated player: ${targetPlayerId}`);
+      }
+    });
+
+    // Обработчик подсмотра роли игрока президентом
+    this.onMessage("president-peek-player", (client, payload) => {
+      if (client.sessionId !== this.state.presidentId || this.state.currentPhase !== "presidentPeek") {
+        console.warn(`Client ${client.sessionId} tried to peek a player outside of presidentPeek phase or not as president.`);
+        return;
+      }
+
+      const targetPlayerId = payload.targetId;
+      const targetPlayer = this.state.players.get(targetPlayerId);
+
+      if (targetPlayer && !targetPlayer.isEliminated) {
+        let revealedRole = targetPlayer.role;
+        if (revealedRole === "hitler") {
+          revealedRole = "fascist"; // Гитлер раскрывается как фашист
+        }
+
+        // Отправляем информацию о подсмотренной роли только президенту
+        const presidentClient = this.clients.find(c => c.sessionId === client.sessionId);
+        if (presidentClient) {
+          presidentClient.send("player-peek-info", { targetPlayerId: targetPlayerId, revealedRole: revealedRole });
+          console.log(`President ${this.state.players.get(client.sessionId)?.nickname} peeked ${targetPlayer.nickname} and saw them as ${revealedRole}.`);
+        }
+
+        this.state.isPresidentialPeekActive = false;
+        this.state.currentPhase = "gamePlay"; // Возвращаемся к обычной фазе игры
+
+        // Проверяем условия победы после подсмотра
+        const gameOver = this.checkWinConditions();
+
+        // Если игра не закончилась, переходим к следующему раунду выборов президента
+        if (!gameOver) {
+          this.clock.setTimeout(() => {
+            this.selectNextPresident();
+            this.selectPresident();
+          }, 5000);
+        }
+      } else {
+        console.warn(`President ${this.state.players.get(client.sessionId)?.nickname} tried to peek an invalid or eliminated player: ${targetPlayerId}`);
       }
     });
 
@@ -387,16 +440,55 @@ export class MyRoom extends Room<MyRoomState> {
       [roles[i], roles[j]] = [roles[j], roles[i]];
     }
 
-    // Назначаем роли игрокам и отправляем им их роли
     let roleIndex = 0;
     this.state.players.forEach((player, sessionId) => {
       player.role = roles[roleIndex];
+      roleIndex++;
+    });
+
+    // Собираем информацию о фашистах и Гитлере
+    const fascistPlayers: { sessionId: string; nickname: string; role: string }[] = [];
+    let hitlerPlayer: { sessionId: string; nickname: string; role: string } | null = null;
+
+    this.state.players.forEach((player, sessionId) => {
+      if (player.role === "fascist") {
+        fascistPlayers.push({ sessionId: sessionId, nickname: player.nickname, role: player.role });
+      } else if (player.role === "hitler") {
+        hitlerPlayer = { sessionId: sessionId, nickname: player.nickname, role: player.role };
+      }
+    });
+
+    // Отправляем роли игрокам и информацию о других фашистах/Гитлере
+    this.state.players.forEach((player, sessionId) => {
       const client = this.clients.find(c => c.sessionId === sessionId);
       if (client) {
         console.log(`Sending role "${player.role}" to player ${player.nickname} (${sessionId})`);
+        console.log(`Фашисты: ${fascistPlayers.length}`)
         client.send("your-role", { role: player.role });
+
+        // Отправляем информацию о других фашистах, если игрок - фашист или Гитлер
+        if (player.role === "fascist") {
+          const otherFascists = fascistPlayers.filter(f => f.sessionId !== sessionId);
+          if (hitlerPlayer) {
+            otherFascists.push(hitlerPlayer);
+          }
+          this.clock.setTimeout(() => {
+            client.send("fascist-roles-info", { fascists: otherFascists });
+            console.log(`Sending fascist roles info to fascist player ${player.nickname}:`, otherFascists.map(f => `${f.nickname} (${f.role})`));
+          }, 3000); // Задержка в 3 секунды
+        } else if (player.role === "hitler") {
+          // Гитлер знает других фашистов только если всего 2 фашиста (включая Гитлера)
+          if (fascistPlayers.length === 1) {
+            const otherFascistsForHitler = fascistPlayers.filter(f => f.sessionId !== sessionId);
+            this.clock.setTimeout(() => {
+              client.send("fascist-roles-info", { fascists: otherFascistsForHitler });
+              console.log(`Sending fascist roles info to Hitler (${player.nickname}):`, otherFascistsForHitler.map(f => `${f.nickname} (${f.role})`));
+            }, 3000); // Задержка в 3 секунды
+          } else {
+            console.log(`Hitler (${player.nickname}) does not know other fascists.`);
+          }
+        }
       }
-      roleIndex++;
     });
   }
 
@@ -680,6 +772,21 @@ export class MyRoom extends Room<MyRoomState> {
         .filter(([sessionId, player]) => sessionId !== this.state.presidentId && !player.isEliminated)
         .map(([sessionId, player]) => ({ sessionId: sessionId, nickname: player.nickname }));
       presidentClient.send("start-assassination", { targets: eligibleTargets });
+    }
+  }
+
+  // Функция для начала фазы президентского подсмотра
+  startPresidentialPeekPhase() {
+    this.state.currentPhase = "presidentPeek";
+    this.state.isPresidentialPeekActive = true;
+    console.log(`President ${this.state.players.get(this.state.presidentId)?.nickname} is peeking at a player's role.`);
+
+    const presidentClient = this.clients.find(c => c.sessionId === this.state.presidentId);
+    if (presidentClient) {
+      const eligibleTargets = Array.from(this.state.players.entries())
+        .filter(([sessionId, player]) => sessionId !== this.state.presidentId && !player.isEliminated)
+        .map(([sessionId, player]) => ({ sessionId: sessionId, nickname: player.nickname }));
+      presidentClient.send("start-president-peek", { targets: eligibleTargets });
     }
   }
 

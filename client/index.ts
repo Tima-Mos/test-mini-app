@@ -442,6 +442,11 @@ export class GameScene extends Phaser.Scene {
       this.displayRoleCard(message.role);
     });
 
+    // Add fascist roles info message listener
+    this.room.onMessage("fascist-roles-info", (message) => {
+      this.displayFascistRolesInfo(message.fascists);
+    });
+
     // Add new unified president-info message listener here
     this.room.onMessage("president-info", (message) => {
       this.displayPresidentInfoCard(message.presidentId, message.presidentNickname);
@@ -498,6 +503,15 @@ export class GameScene extends Phaser.Scene {
 
     this.room.onMessage("player-eliminated", (message) => {
       this.displayPlayerEliminated(message.eliminatedPlayerId, message.message);
+    });
+
+    // Add new presidential peek message listeners
+    this.room.onMessage("start-president-peek", (message) => {
+      this.displayPresidentialPeekSelection(message.targets);
+    });
+
+    this.room.onMessage("player-peek-info", (message) => {
+      this.displayPlayerPeekInfo(message.targetPlayerId, message.revealedRole);
     });
 
     // Кнопка "Назад к лобби"
@@ -829,6 +843,82 @@ export class GameScene extends Phaser.Scene {
 
     this.time.delayedCall(5000, () => {
       eliminatedContainer.destroy(true);
+    }, [], this);
+  }
+
+  // New function to display presidential peek target selection to the president
+  displayPresidentialPeekSelection(targets: { sessionId: string; nickname: string }[]) {
+    const selectionContainer = this.add.container(0, 0);
+    selectionContainer.setDepth(1002);
+
+    const background = this.add.rectangle(400, 300, 700, 400, 0x000000, 0.8);
+    selectionContainer.add(background);
+
+    const title = this.add.text(400, 100, 'PRESIDENT: PEEK AT A PLAYER\'S ROLE', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    selectionContainer.add(title);
+
+    targets.forEach((player, index) => {
+      const y = 180 + index * 60;
+
+      const playerCard = this.add.rectangle(400, y, 400, 50, 0x00BFFF, 0.9); // Deep Sky Blue for peek target
+      playerCard.setInteractive();
+      playerCard.on('pointerdown', () => {
+        this.room.send("president-peek-player", { targetId: player.sessionId });
+        selectionContainer.destroy(true);
+      });
+      selectionContainer.add(playerCard);
+
+      const playerText = this.add.text(400, y, player.nickname, { fontSize: '24px', color: '#ffffff' }).setOrigin(0.5);
+      selectionContainer.add(playerText);
+    });
+  }
+
+  // New function to display revealed player role info to the president
+  displayPlayerPeekInfo(targetPlayerId: string, revealedRole: string) {
+    const peekInfoContainer = this.add.container(0, 0);
+    peekInfoContainer.setDepth(1003);
+
+    const background = this.add.rectangle(400, 300, 600, 250, 0x000000, 0.9);
+    peekInfoContainer.add(background);
+
+    const targetPlayer = this.room.state.players.get(targetPlayerId);
+    const nickname = targetPlayer ? targetPlayer.nickname : "Unknown Player";
+
+    const message = `You peeked at ${nickname}!\nThey are: ${revealedRole.toUpperCase()}`;
+    const peekText = this.add.text(400, 300, message, { fontSize: '36px', color: '#ffffff', align: 'center' }).setOrigin(0.5);
+    peekInfoContainer.add(peekText);
+
+    this.time.delayedCall(5000, () => {
+      peekInfoContainer.destroy(true);
+    }, [], this);
+  }
+
+  // New function to display fascist roles information
+  displayFascistRolesInfo(fascists: { sessionId: string; nickname: string; role: string }[]) {
+    if (fascists.length === 0) {
+      // No other fascists to display (e.g., Hitler in a larger game where they don't know fascists)
+      return;
+    }
+
+    const fascistInfoContainer = this.add.container(0, 0);
+    fascistInfoContainer.setDepth(1003);
+
+    const background = this.add.rectangle(400, 300, 700, 400, 0x8B0000, 0.9); // Dark Red background
+    fascistInfoContainer.add(background);
+
+    const title = this.add.text(400, 100, 'FASCIST ROLES REVEALED!', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    fascistInfoContainer.add(title);
+
+    let message = "Your fellow Fascists are:\n";
+    fascists.forEach(f => {
+      message += `- ${f.nickname} (${f.role.toUpperCase()})\n`;
+    });
+
+    const infoText = this.add.text(400, 250, message, { fontSize: '24px', color: '#ffffff', align: 'center' }).setOrigin(0.5);
+    fascistInfoContainer.add(infoText);
+
+    this.time.delayedCall(7000, () => {
+      fascistInfoContainer.destroy(true);
     }, [], this);
   }
 }
